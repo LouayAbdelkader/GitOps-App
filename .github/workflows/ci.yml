@@ -6,7 +6,7 @@ on:
     branches: [main, staging, develop]
 jobs:
   lint-backend:
-    runs-on: self-hosted
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -47,7 +47,7 @@ jobs:
           retention-days: 14
 
   lint-frontend:
-    runs-on: self-hosted
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -91,7 +91,7 @@ jobs:
   # puis les exporte en .tar afin que trivy-scan les recharge au lieu
   # de les reconstruire (évite un double build backend + frontend).
   build-docker-images:
-    runs-on: self-hosted
+    runs-on: ubuntu-22.04
     needs: [lint-backend, lint-frontend]
     steps:
       - uses: actions/checkout@v4
@@ -120,7 +120,7 @@ jobs:
           retention-days: 1
 
   coverage-report:
-    runs-on: self-hosted
+    runs-on: ubuntu-22.04
     needs: [lint-backend, lint-frontend]
     steps:
       - uses: actions/checkout@v4
@@ -347,7 +347,7 @@ jobs:
           attachments: ${{ env.COVERAGE_PDF_OK == 'true' && 'coverage-report.pdf' || '' }}
 
   trivy-scan:
-    runs-on: self-hosted
+    runs-on: ubuntu-22.04
     needs: [build-docker-images, coverage-report]
     steps:
       - uses: actions/checkout@v4
@@ -607,7 +607,7 @@ jobs:
           attachments: ${{ env.COVERAGE_PDF_AVAILABLE == 'true' && 'backend-report.pdf,frontend-report.pdf,coverage-pdf/coverage-report.pdf' || 'backend-report.pdf,frontend-report.pdf' }}
 
   push-dockerhub:
-    runs-on: self-hosted
+    runs-on: ubuntu-22.04
     needs: trivy-scan
     # On ne pousse une image et on ne déclenche un redéploiement que pour les
     # 3 branches d'environnement. Une PR ou une autre branche s'arrête ici.
@@ -657,7 +657,7 @@ jobs:
   # commit/push ce changement. ArgoCD (Application dédiée à cet environnement,
   # qui watch ce même repo/branche/path) détecte la modification et resynchronise.
   update-k8s-manifests:
-    runs-on: self-hosted
+    runs-on: ubuntu-22.04
     needs: push-dockerhub
     permissions:
       contents: write
@@ -719,3 +719,110 @@ jobs:
           else
             echo "### Aucun changement à commiter (tag déjà à jour)" >> "$GITHUB_STEP_SUMMARY"
           fi
+
+  # Email récapitulatif final : liste chaque étape du pipeline avec son
+  # statut (succès / échec / ignorée). Tourne TOUJOURS (if: always()),
+  # même si une ou plusieurs étapes précédentes ont échoué, pour qu'on
+  # sache exactement où ça a cassé.
+  notify-pipeline-summary:
+    runs-on: ubuntu-22.04
+    if: always()
+    needs:
+      - lint-backend
+      - lint-frontend
+      - build-docker-images
+      - coverage-report
+      - trivy-scan
+      - push-dockerhub
+      - update-k8s-manifests
+    steps:
+      - name: Déterminer le statut global
+        id: global
+        run: |
+          # Si un des jobs requis a échoué -> statut global ÉCHEC.
+          # "skipped" (ex: push-dockerhub sur une PR) n'est pas un échec.
+          if [[ "${{ contains(needs.*.result, 'failure') }}" == "true" ]]; then
+            echo "status=failure" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=success" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Construire le tableau des étapes
+        id: steps_table
+        run: |
+          # Génère une ligne de tableau HTML par étape, avec pastille de
+          # couleur selon le résultat (success / failure / skipped / cancelled).
+          row() {
+            local label="$1" result="$2"
+            local color bg text
+            case "$result" in
+              success)   color="#166534"; bg="#dcfce7"; text="RÉUSSI" ;;
+              failure)   color="#991b1b"; bg="#fee2e2"; text="ÉCHOUÉ" ;;
+              skipped)   color="#475569"; bg="#f1f5f9"; text="IGNORÉ" ;;
+              cancelled) color="#92400e"; bg="#fef3c7"; text="ANNULÉ" ;;
+              *)         color="#475569"; bg="#f1f5f9"; text="${result:-INCONNU}" ;;
+            esac
+            echo "<tr><td style=\"padding:10px 14px;border:1px solid #e2e8f0;font-size:13px;color:#334155;\">${label}</td><td style=\"padding:10px 14px;border:1px solid #e2e8f0;text-align:center;\"><span style=\"display:inline-block;padding:3px 12px;border-radius:999px;font-size:11px;font-weight:700;background:${bg};color:${color};\">${text}</span></td></tr>"
+          }
+
+          {
+            echo "ROWS<<EOF_ROWS"
+            row "Lint + tests backend"        "${{ needs.lint-backend.result }}"
+            row "Lint + tests frontend"       "${{ needs.lint-frontend.result }}"
+            row "Build images Docker"         "${{ needs.build-docker-images.result }}"
+            row "Rapport de couverture"       "${{ needs.coverage-report.result }}"
+            row "Scan de sécurité (Trivy)"    "${{ needs.trivy-scan.result }}"
+            row "Push Docker Hub"             "${{ needs.push-dockerhub.result }}"
+            row "Mise à jour manifests K8s"   "${{ needs.update-k8s-manifests.result }}"
+            echo "EOF_ROWS"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Envoyer l'email récapitulatif
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.MAIL_SERVER }}
+          server_port: ${{ secrets.MAIL_PORT }}
+          secure: true
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          subject: "[Pipeline ${{ github.ref_name }}] ${{ steps.global.outputs.status == 'success' && 'Succès' || 'ÉCHEC' }} — ${{ github.repository }}"
+          to: ${{ secrets.EMAIL_TO }}
+          from: GitHub Actions CI
+          convert_markdown: true
+          html_body: |
+            <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 640px; margin: auto; background: #f1f5f9; padding: 24px;">
+              <div style="background: #ffffff; border-radius: 14px; overflow: hidden; border: 1px solid #e2e8f0;">
+                <div style="background: linear-gradient(135deg, #0f172a, #1e293b); padding: 32px 36px;">
+                  <p style="margin: 0; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: #94a3b8;">Pipeline CI/CD · Récapitulatif</p>
+                  <h1 style="margin: 8px 0 0; font-size: 21px; color: #ffffff; font-weight: 600;">
+                    ${{ steps.global.outputs.status == 'success' && 'Pipeline terminé avec succès' || 'Le pipeline a échoué' }}
+                  </h1>
+                  <p style="margin: 10px 0 0; font-size: 13px; color: #cbd5e1;">
+                    ${{ github.repository }} &nbsp;·&nbsp; branche <b>${{ github.ref_name }}</b> &nbsp;·&nbsp; commit ${{ github.sha }}
+                  </p>
+                </div>
+
+                <div style="padding: 32px 36px;">
+                  <table style="width: 100%; border-collapse: collapse; margin-bottom: 24px;">
+                    <tr style="background: #f8fafc;">
+                      <td style="padding: 12px 14px; border: 1px solid #e2e8f0; font-weight: 600; font-size: 13px; color: #334155;">Étape</td>
+                      <td style="padding: 12px 14px; border: 1px solid #e2e8f0; font-weight: 600; font-size: 13px; color: #334155; text-align: center;">Statut</td>
+                    </tr>
+                    ${{ steps.steps_table.outputs.ROWS }}
+                  </table>
+
+                  <p style="font-size: 13px; color: #64748b; line-height: 1.6; margin: 0 0 20px;">
+                    Auteur du commit : ${{ github.actor }}
+                  </p>
+
+                  <a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                     style="display: inline-block; padding: 11px 22px; background: #2563eb; color: #ffffff; text-decoration: none; border-radius: 8px; font-size: 13px; font-weight: 600;">
+                    Voir le run complet sur GitHub Actions
+                  </a>
+                </div>
+
+                <div style="background: #f8fafc; padding: 16px 36px; border-top: 1px solid #e2e8f0; font-size: 11px; color: #94a3b8;">
+                  Généré automatiquement par la pipeline CI/CD
+                </div>
+              </div>
+            </div>
