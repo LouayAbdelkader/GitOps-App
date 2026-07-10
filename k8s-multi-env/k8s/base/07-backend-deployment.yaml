@@ -5,7 +5,7 @@ metadata:
   labels:
     app: employee-backend
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: employee-backend
@@ -17,7 +17,7 @@ spec:
       containers:
       - name: backend
         image: silou19/backend:latest
-        imagePullPolicy: IfNotPresent
+        imagePullPolicy: Always
         ports:
         - containerPort: 5000
         env:
