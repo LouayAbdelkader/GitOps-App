@@ -270,7 +270,15 @@ jobs:
 
       - name: Installer wkhtmltopdf
         if: always()
-        run: sudo apt-get install -y wkhtmltopdf
+        run: |
+          # "apt-get install wkhtmltopdf" tire tout Qt5 WebKit + X11 (avahi,
+          # ModemManager, geoclue...) : 35 Mo, très lent, et certains paquets
+          # déclenchent des prompts interactifs qui bloquent le runner.
+          # On installe à la place le binaire statique officiel (headless,
+          # sans dépendances GUI).
+          curl -sLo wkhtmltox.deb "https://github.com/wkhtmltopdf/packaging/releases/download/0.12.6.1-2/wkhtmltox_0.12.6.1-2.jammy_amd64.deb"
+          sudo apt-get install -y ./wkhtmltox.deb
+          rm -f wkhtmltox.deb
 
       - name: Convertir en PDF
         if: always()
@@ -401,7 +409,10 @@ jobs:
           sudo apt-get install -y trivy
 
       - name: Installer wkhtmltopdf (conversion HTML -> PDF)
-        run: sudo apt-get install -y wkhtmltopdf
+        run: |
+          curl -sLo wkhtmltox.deb "https://github.com/wkhtmltopdf/packaging/releases/download/0.12.6.1-2/wkhtmltox_0.12.6.1-2.jammy_amd64.deb"
+          sudo apt-get install -y ./wkhtmltox.deb
+          rm -f wkhtmltox.deb
 
       - name: Créer le template HTML personnalisé du rapport
         run: |
@@ -634,6 +645,11 @@ jobs:
     # On ne pousse une image et on ne déclenche un redéploiement que pour les
     # 3 branches d'environnement. Une PR ou une autre branche s'arrête ici.
     if: github.event_name == 'push' && contains(fromJSON('["main","staging","develop"]'), github.ref_name)
+    # Digests exposés en sortie de job pour que "sign-images" (job séparé)
+    # puisse signer sans avoir à re-pull/re-inspecter les images.
+    outputs:
+      backend_digest: ${{ steps.digests.outputs.backend }}
+      frontend_digest: ${{ steps.digests.outputs.frontend }}
     steps:
       - name: Télécharger les images buildées
         uses: actions/download-artifact@v4
@@ -668,11 +684,54 @@ jobs:
           docker push ${{ secrets.DOCKERHUB_USERNAME }}/frontend:latest
           docker push ${{ secrets.DOCKERHUB_USERNAME }}/frontend:${{ env.SHORT_SHA }}
 
+      - name: Récupérer les digests des images poussées
+        id: digests
+        run: |
+          # On signera par DIGEST (sha256:...) et non par tag : un tag comme
+          # ":latest" est mutable et peut changer, le digest identifie de
+          # façon unique et immuable le contenu réellement poussé.
+          BACKEND_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' ${{ secrets.DOCKERHUB_USERNAME }}/backend:${{ env.SHORT_SHA }})
+          FRONTEND_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' ${{ secrets.DOCKERHUB_USERNAME }}/frontend:${{ env.SHORT_SHA }})
+          echo "backend=${BACKEND_DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "frontend=${FRONTEND_DIGEST}" >> "$GITHUB_OUTPUT"
+
       - name: Résumé
         run: |
           echo "### Images poussées sur Docker Hub" >> "$GITHUB_STEP_SUMMARY"
           echo "- \`${{ secrets.DOCKERHUB_USERNAME }}/backend:latest\` et \`:${{ env.SHORT_SHA }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- \`${{ secrets.DOCKERHUB_USERNAME }}/frontend:latest\` et \`:${{ env.SHORT_SHA }}\`" >> "$GITHUB_STEP_SUMMARY"
+
+  # Job séparé et dédié à la signature Cosign : plus facile à relire/débugger
+  # indépendamment du push Docker Hub. Ne récupère aucune image (pas besoin),
+  # il signe directement les digests distants exposés par push-dockerhub.
+  sign-images:
+    runs-on: ubuntu-22.04
+    needs: push-dockerhub
+    # id-token: write est nécessaire pour la signature Cosign "keyless"
+    # (OIDC Sigstore) : pas de clé privée à gérer/stocker en secret.
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Installer Cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Connexion à Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Signer les images avec Cosign (keyless / Sigstore)
+        run: |
+          cosign sign --yes "${{ needs.push-dockerhub.outputs.backend_digest }}"
+          cosign sign --yes "${{ needs.push-dockerhub.outputs.frontend_digest }}"
+
+      - name: Résumé
+        run: |
+          echo "### Images signées avec Cosign (keyless)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- \`${{ needs.push-dockerhub.outputs.backend_digest }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- \`${{ needs.push-dockerhub.outputs.frontend_digest }}\`" >> "$GITHUB_STEP_SUMMARY"
 
   # Met à jour l'OVERLAY kustomize correspondant à la branche (develop -> dev,
   # staging -> staging, main -> prod) avec le nouveau tag d'image, puis
@@ -680,7 +739,7 @@ jobs:
   # qui watch ce même repo/branche/path) détecte la modification et resynchronise.
   update-k8s-manifests:
     runs-on: ubuntu-22.04
-    needs: push-dockerhub
+    needs: sign-images
     permissions:
       contents: write
     steps:
@@ -691,8 +750,16 @@ jobs:
 
       - name: Installer kustomize
         run: |
-          curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
+          # L'ancien script officiel install_kustomize.sh interroge l'API GitHub
+          # pour trouver la dernière release et échoue silencieusement en cas de
+          # rate-limit / changement de format de réponse (tar.gz introuvable).
+          # On télécharge ici une version précise et épinglée, en direct.
+          KUSTOMIZE_VERSION="5.4.3"
+          curl -sLo kustomize.tar.gz \
+            "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz"
+          tar -xzf kustomize.tar.gz
           sudo mv kustomize /usr/local/bin/kustomize
+          rm -f kustomize.tar.gz
           kustomize version
 
       - name: Déterminer l'overlay cible en fonction de la branche
@@ -756,6 +823,7 @@ jobs:
       - coverage-report
       - trivy-scan
       - push-dockerhub
+      - sign-images
       - update-k8s-manifests
     steps:
       - name: Déterminer le statut global
@@ -824,6 +892,7 @@ jobs:
             row "Rapport de couverture"       "${{ needs.coverage-report.result }}"
             row "Scan de sécurité (Trivy)"    "${{ needs.trivy-scan.result }}"
             row "Push Docker Hub"             "${{ needs.push-dockerhub.result }}"
+            row "Signature Cosign"            "${{ needs.sign-images.result }}"
             row "Mise à jour manifests K8s"   "${{ needs.update-k8s-manifests.result }}"
             echo "EOF_ROWS"
           } >> "$GITHUB_OUTPUT"
