@@ -270,7 +270,15 @@ jobs:
 
       - name: Installer wkhtmltopdf
         if: always()
-        run: sudo apt-get install -y wkhtmltopdf
+        run: |
+          # "apt-get install wkhtmltopdf" tire tout Qt5 WebKit + X11 (avahi,
+          # ModemManager, geoclue...) : 35 Mo, très lent, et certains paquets
+          # déclenchent des prompts interactifs qui bloquent le runner.
+          # On installe à la place le binaire statique officiel (headless,
+          # sans dépendances GUI).
+          curl -sLo wkhtmltox.deb "https://github.com/wkhtmltopdf/packaging/releases/download/0.12.6.1-2/wkhtmltox_0.12.6.1-2.jammy_amd64.deb"
+          sudo apt-get install -y ./wkhtmltox.deb
+          rm -f wkhtmltox.deb
 
       - name: Convertir en PDF
         if: always()
@@ -401,7 +409,10 @@ jobs:
           sudo apt-get install -y trivy
 
       - name: Installer wkhtmltopdf (conversion HTML -> PDF)
-        run: sudo apt-get install -y wkhtmltopdf
+        run: |
+          curl -sLo wkhtmltox.deb "https://github.com/wkhtmltopdf/packaging/releases/download/0.12.6.1-2/wkhtmltox_0.12.6.1-2.jammy_amd64.deb"
+          sudo apt-get install -y ./wkhtmltox.deb
+          rm -f wkhtmltox.deb
 
       - name: Créer le template HTML personnalisé du rapport
         run: |
