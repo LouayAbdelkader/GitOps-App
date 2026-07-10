@@ -4,7 +4,7 @@ kind: Kustomization
 namespace: employee-dev
 
 resources:
-  - ../../base
+- ../../base
 
 # Les tags sont mis à jour automatiquement par la CI
 # (étape "kustomize edit set image" sur la branche develop).
@@ -13,11 +13,13 @@ resources:
 # placeholder provoquait un ImagePullBackOff. On repart sur "latest",
 # qui existe réellement, en attendant que la CI committe le vrai tag.
 images:
-  - name: silou19/backend
-    newTag: latest
-  - name: silou19/frontend
-    newTag: latest
+- name: silou19/backend
+  newName: silou19/backend
+  newTag: 74bfff6
+- name: silou19/frontend
+  newName: silou19/frontend
+  newTag: 74bfff6
 
 patches:
-  - path: patch-replicas.yaml
-  - path: patch-nodeport.yaml
+- path: patch-replicas.yaml
+- path: patch-nodeport.yaml
