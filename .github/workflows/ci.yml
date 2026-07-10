@@ -688,7 +688,17 @@ jobs:
           # (ex: "abc123: digest: sha256:... size: 1234").
           push_and_get_digest() {
             local ref="$1"
-            docker push "$ref" | tee /tmp/push-output.log
+            # IMPORTANT : on redirige la sortie de "docker push" vers un
+            # fichier (et on la réaffiche sur stderr pour garder les logs
+            # visibles dans l'étape), SANS jamais laisser cette sortie
+            # transiter par stdout. Cette fonction est appelée dans un
+            # $(...) : si on utilisait "tee" (qui écrit aussi sur stdout),
+            # tout le flux de progression du push ("Preparing", "Pushed",
+            # ...) se retrouverait capturé dans la variable au lieu du seul
+            # digest, ce qui cassait ensuite l'écriture dans $GITHUB_OUTPUT
+            # (format "clé=valeur" invalide sur les lignes suivantes).
+            docker push "$ref" > /tmp/push-output.log 2>&1
+            cat /tmp/push-output.log >&2
             grep -oE 'sha256:[a-f0-9]{64}' /tmp/push-output.log | tail -1
           }
 
