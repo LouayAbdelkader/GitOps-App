@@ -234,7 +234,7 @@ jobs:
           <style>
             :root{--bg:#f8fafc;--card:#ffffff;--line:#e2e8f0;--text:#1e293b;--muted:#64748b;}
             body{font-family:'Segoe UI',Arial,sans-serif;background:var(--bg);margin:0;padding:32px;color:var(--text);}
-            .header{background:linear-gradient(135deg,#1e293b,#334155);color:#fff;padding:28px 32px;border-radius:12px;margin-bottom:28px;}
+            .header{background-color:#1e293b;color:#ffffff;padding:28px 32px;border-radius:12px;margin-bottom:28px;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
             .header h1{margin:0;font-size:22px;}
             .header p{margin:6px 0 0;opacity:.85;font-size:13px;}
             .summary{display:flex;gap:16px;margin-bottom:8px;}
@@ -326,7 +326,7 @@ jobs:
           html_body: |
             <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 640px; margin: auto; background: #f1f5f9; padding: 24px;">
               <div style="background: #ffffff; border-radius: 14px; overflow: hidden; border: 1px solid #e2e8f0;">
-                <div style="background: linear-gradient(135deg, #0f172a, #1e293b); padding: 32px 36px;">
+                <div style="background-color: #0f172a; padding: 32px 36px;">
                   <p style="margin: 0; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: #94a3b8;">Pipeline CI/CD</p>
                   <h1 style="margin: 8px 0 0; font-size: 21px; color: #ffffff; font-weight: 600;">Rapport de couverture de code</h1>
                   <p style="margin: 10px 0 0; font-size: 13px; color: #cbd5e1;">${{ github.repository }} &nbsp;·&nbsp; commit ${{ github.sha }}</p>
@@ -426,7 +426,7 @@ jobs:
             :root{--bg:#f8fafc;--card:#ffffff;--line:#e2e8f0;--text:#1e293b;--muted:#64748b;}
             *{box-sizing:border-box;}
             body{font-family:'Segoe UI',Arial,sans-serif;background:var(--bg);margin:0;padding:32px;color:var(--text);}
-            .header{background:linear-gradient(135deg,#1e293b,#334155);color:#fff;padding:28px 32px;border-radius:12px;margin-bottom:28px;}
+            .header{background-color:#1e293b;color:#ffffff;padding:28px 32px;border-radius:12px;margin-bottom:28px;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
             .header h1{margin:0;font-size:22px;}
             .header p{margin:6px 0 0;opacity:.85;font-size:13px;}
             h2.target{font-size:16px;border-left:4px solid #2563eb;padding-left:10px;margin:32px 0 12px;word-break:break-all;}
@@ -575,7 +575,7 @@ jobs:
           echo "- Frontend : ${FC} critique(s), ${FH} high" >> "$GITHUB_STEP_SUMMARY"
 
           if [ "$TOTAL" -gt 0 ]; then
-            echo "⚠️ $TOTAL vulnérabilité(s) CRITICAL/HIGH détectée(s) au total. Les rapports ont été générés et envoyés par email ; le déploiement continue quand même (scan informatif, non bloquant)." >> "$GITHUB_STEP_SUMMARY"
+            echo "ATTENTION : $TOTAL vulnérabilité(s) CRITICAL/HIGH détectée(s) au total. Les rapports ont été générés et envoyés par email ; le déploiement continue quand même (scan informatif, non bloquant)." >> "$GITHUB_STEP_SUMMARY"
             echo "vulnerabilities_found=true" >> "$GITHUB_OUTPUT"
           else
             echo "Aucune vulnérabilité CRITICAL/HIGH détectée." >> "$GITHUB_STEP_SUMMARY"
@@ -598,7 +598,7 @@ jobs:
           html_body: |
             <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 640px; margin: auto; background: #f1f5f9; padding: 24px;">
               <div style="background: #ffffff; border-radius: 14px; overflow: hidden; border: 1px solid #e2e8f0;">
-                <div style="background: linear-gradient(135deg, #0f172a, #1e293b); padding: 32px 36px;">
+                <div style="background-color: #0f172a; padding: 32px 36px;">
                   <p style="margin: 0; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: #94a3b8;">Pipeline CI/CD · Sécurité</p>
                   <h1 style="margin: 8px 0 0; font-size: 21px; color: #ffffff; font-weight: 600;">Rapport de scan Trivy</h1>
                   <p style="margin: 10px 0 0; font-size: 13px; color: #cbd5e1;">${{ github.repository }} &nbsp;·&nbsp; commit ${{ github.sha }}</p>
@@ -658,11 +658,6 @@ jobs:
     # On ne pousse une image et on ne déclenche un redéploiement que pour les
     # 3 branches d'environnement. Une PR ou une autre branche s'arrête ici.
     if: github.event_name == 'push' && contains(fromJSON('["main","staging","develop"]'), github.ref_name)
-    # Digests exposés en sortie de job pour que "sign-images" (job séparé)
-    # puisse signer sans avoir à re-pull/re-inspecter les images.
-    outputs:
-      backend_digest: ${{ steps.push.outputs.backend_digest }}
-      frontend_digest: ${{ steps.push.outputs.frontend_digest }}
     steps:
       - name: Télécharger les images buildées
         uses: actions/download-artifact@v4
@@ -684,9 +679,14 @@ jobs:
       - name: Tagger les images
         run: |
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
-          docker tag backend:test  ${{ secrets.DOCKERHUB_USERNAME }}/backend:latest
+          # NOTE : on ne tag/pousse plus ":latest" ici. "latest" est un tag
+          # mutable — un même nom peut pointer vers un digest différent
+          # d'un jour à l'autre, ce qui est incompatible avec un pipeline
+          # GitOps où Kustomize doit épingler une version immuable et
+          # traçable. Seul le tag SHORT_SHA (immuable, unique par commit)
+          # est poussé et utilisé pour le déploiement K8s. ":latest" reste
+          # pertinent uniquement pour un usage local/dev en dehors de la CI.
           docker tag backend:test  ${{ secrets.DOCKERHUB_USERNAME }}/backend:${SHORT_SHA}
-          docker tag frontend:test ${{ secrets.DOCKERHUB_USERNAME }}/frontend:latest
           docker tag frontend:test ${{ secrets.DOCKERHUB_USERNAME }}/frontend:${SHORT_SHA}
           echo "SHORT_SHA=${SHORT_SHA}" >> "$GITHUB_ENV"
 
@@ -699,27 +699,14 @@ jobs:
           # directement de la sortie de "docker push", qui l'affiche
           # toujours explicitement sur sa dernière ligne
           # (ex: "abc123: digest: sha256:... size: 1234").
-          push_and_get_digest() {
-            local ref="$1"
-            # IMPORTANT : on redirige la sortie de "docker push" vers un
-            # fichier (et on la réaffiche sur stderr pour garder les logs
-            # visibles dans l'étape), SANS jamais laisser cette sortie
-            # transiter par stdout. Cette fonction est appelée dans un
-            # $(...) : si on utilisait "tee" (qui écrit aussi sur stdout),
-            # tout le flux de progression du push ("Preparing", "Pushed",
-            # ...) se retrouverait capturé dans la variable au lieu du seul
-            # digest, ce qui cassait ensuite l'écriture dans $GITHUB_OUTPUT
-            # (format "clé=valeur" invalide sur les lignes suivantes).
-            docker push "$ref" > /tmp/push-output.log 2>&1
-            cat /tmp/push-output.log >&2
-            grep -oE 'sha256:[a-f0-9]{64}' /tmp/push-output.log | tail -1
-          }
 
-          docker push ${{ secrets.DOCKERHUB_USERNAME }}/backend:latest
-          BACKEND_HASH=$(push_and_get_digest ${{ secrets.DOCKERHUB_USERNAME }}/backend:${{ env.SHORT_SHA }})
+          docker push "${{ secrets.DOCKERHUB_USERNAME }}/backend:${{ env.SHORT_SHA }}" > /tmp/push-output.log 2>&1
+          cat /tmp/push-output.log >&2
+          BACKEND_HASH=$(grep -oE 'sha256:[a-f0-9]{64}' /tmp/push-output.log | tail -1)
 
-          docker push ${{ secrets.DOCKERHUB_USERNAME }}/frontend:latest
-          FRONTEND_HASH=$(push_and_get_digest ${{ secrets.DOCKERHUB_USERNAME }}/frontend:${{ env.SHORT_SHA }})
+          docker push "${{ secrets.DOCKERHUB_USERNAME }}/frontend:${{ env.SHORT_SHA }}" > /tmp/push-output.log 2>&1
+          cat /tmp/push-output.log >&2
+          FRONTEND_HASH=$(grep -oE 'sha256:[a-f0-9]{64}' /tmp/push-output.log | tail -1)
 
           if [ -z "$BACKEND_HASH" ] || [ -z "$FRONTEND_HASH" ]; then
             echo "::error::Impossible d'extraire le digest depuis la sortie de docker push."
@@ -732,14 +719,29 @@ jobs:
           echo "Digest backend  : ${{ secrets.DOCKERHUB_USERNAME }}/backend@${BACKEND_HASH}"
           echo "Digest frontend : ${{ secrets.DOCKERHUB_USERNAME }}/frontend@${FRONTEND_HASH}"
 
-          echo "backend_digest=${{ secrets.DOCKERHUB_USERNAME }}/backend@${BACKEND_HASH}" >> "$GITHUB_OUTPUT"
-          echo "frontend_digest=${{ secrets.DOCKERHUB_USERNAME }}/frontend@${FRONTEND_HASH}" >> "$GITHUB_OUTPUT"
+          # On écrit les digests dans un fichier plutôt que dans
+          # $GITHUB_OUTPUT : les "outputs" de job chaînés avec des
+          # comparaisons de chaînes dans un "if:" se sont révélés peu
+          # fiables (le job suivant se skip silencieusement, sans le
+          # moindre log pour comprendre pourquoi). Un fichier transmis en
+          # artifact est visible, "cat-able", et donc débogable.
+          echo "BACKEND_DIGEST=${{ secrets.DOCKERHUB_USERNAME }}/backend@${BACKEND_HASH}" > digests.env
+          echo "FRONTEND_DIGEST=${{ secrets.DOCKERHUB_USERNAME }}/frontend@${FRONTEND_HASH}" >> digests.env
+          echo "--- Contenu de digests.env ---"
+          cat digests.env
+
+      - name: Uploader les digests comme artefact
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-digests
+          path: digests.env
+          retention-days: 1
 
       - name: Résumé
         run: |
           echo "### Images poussées sur Docker Hub" >> "$GITHUB_STEP_SUMMARY"
-          echo "- \`${{ secrets.DOCKERHUB_USERNAME }}/backend:latest\` et \`:${{ env.SHORT_SHA }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- \`${{ secrets.DOCKERHUB_USERNAME }}/frontend:latest\` et \`:${{ env.SHORT_SHA }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- \`${{ secrets.DOCKERHUB_USERNAME }}/backend:${{ env.SHORT_SHA }}\` (tag immuable, aucun \`:latest\` poussé)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- \`${{ secrets.DOCKERHUB_USERNAME }}/frontend:${{ env.SHORT_SHA }}\` (tag immuable, aucun \`:latest\` poussé)" >> "$GITHUB_STEP_SUMMARY"
 
   # Job séparé et dédié à la signature Cosign : plus facile à relire/débugger
   # indépendamment du push Docker Hub. Ne récupère aucune image (pas besoin),
@@ -752,18 +754,37 @@ jobs:
   sign-images:
     runs-on: ubuntu-22.04
     needs: push-dockerhub
-    if: ${{ needs.push-dockerhub.result == 'success' && needs.push-dockerhub.outputs.backend_digest != '' && needs.push-dockerhub.outputs.frontend_digest != '' }}
+    # Condition volontairement SIMPLE : uniquement "le job précédent a
+    # réussi". On ne teste plus le contenu des digests ici (voir plus haut
+    # pourquoi) : cette vérification se fait maintenant DANS le job, avec un
+    # message d'erreur clair dans les logs si jamais le fichier est vide ou
+    # absent, plutôt qu'un skip silencieux et indébogable.
+    if: needs.push-dockerhub.result == 'success'
     # id-token: write est nécessaire pour la signature Cosign "keyless"
     # (OIDC Sigstore) : pas de clé privée à gérer/stocker en secret.
     permissions:
       contents: read
       id-token: write
     steps:
-      - name: Debug - vérifier les outputs reçus de push-dockerhub
+      - name: Télécharger l'artifact des digests
+        uses: actions/download-artifact@v4
+        with:
+          name: image-digests
+
+      - name: Charger et vérifier les digests
+        id: digests
         run: |
-          echo "push-dockerhub.result=${{ needs.push-dockerhub.result }}"
-          echo "backend_digest=${{ needs.push-dockerhub.outputs.backend_digest }}"
-          echo "frontend_digest=${{ needs.push-dockerhub.outputs.frontend_digest }}"
+          echo "--- Contenu de digests.env reçu ---"
+          cat digests.env
+          source digests.env
+
+          if [ -z "$BACKEND_DIGEST" ] || [ -z "$FRONTEND_DIGEST" ]; then
+            echo "::error::digests.env est vide ou incomplet. Impossible de signer."
+            exit 1
+          fi
+
+          echo "backend_digest=$BACKEND_DIGEST" >> "$GITHUB_OUTPUT"
+          echo "frontend_digest=$FRONTEND_DIGEST" >> "$GITHUB_OUTPUT"
 
       - name: Installer Cosign
         uses: sigstore/cosign-installer@v3
@@ -776,14 +797,72 @@ jobs:
 
       - name: Signer les images avec Cosign (keyless / Sigstore)
         run: |
-          cosign sign --yes "${{ needs.push-dockerhub.outputs.backend_digest }}"
-          cosign sign --yes "${{ needs.push-dockerhub.outputs.frontend_digest }}"
+          cosign sign --yes "${{ steps.digests.outputs.backend_digest }}"
+          cosign sign --yes "${{ steps.digests.outputs.frontend_digest }}"
 
       - name: Résumé
         run: |
           echo "### Images signées avec Cosign (keyless)" >> "$GITHUB_STEP_SUMMARY"
-          echo "- \`${{ needs.push-dockerhub.outputs.backend_digest }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- \`${{ needs.push-dockerhub.outputs.frontend_digest }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- \`${{ steps.digests.outputs.backend_digest }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- \`${{ steps.digests.outputs.frontend_digest }}\`" >> "$GITHUB_STEP_SUMMARY"
+
+  # Vérifie que la signature Cosign posée par "sign-images" est bien valide
+  # AVANT de déclencher le déploiement K8s. Sans ce job, le pipeline se fiait
+  # uniquement au code de sortie de "cosign sign" : la commande peut retourner
+  # OK sans qu'on ait jamais confirmé que la signature est lisible/valide
+  # (ex: problème de propagation vers le registre, signature déposée mais non
+  # vérifiable). "cosign verify" interroge réellement le registre et valide
+  # la signature via l'identité OIDC GitHub Actions attendue, ce qui donne
+  # une vraie garantie avant de resynchroniser ArgoCD.
+  verify-images:
+    runs-on: ubuntu-22.04
+    needs: sign-images
+    if: needs.sign-images.result == 'success'
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Télécharger l'artifact des digests
+        uses: actions/download-artifact@v4
+        with:
+          name: image-digests
+
+      - name: Charger les digests
+        id: digests
+        run: |
+          cat digests.env
+          source digests.env
+          if [ -z "$BACKEND_DIGEST" ] || [ -z "$FRONTEND_DIGEST" ]; then
+            echo "::error::digests.env est vide ou incomplet. Impossible de vérifier."
+            exit 1
+          fi
+          echo "backend_digest=$BACKEND_DIGEST" >> "$GITHUB_OUTPUT"
+          echo "frontend_digest=$FRONTEND_DIGEST" >> "$GITHUB_OUTPUT"
+
+      - name: Installer Cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Vérifier la signature Cosign (backend + frontend)
+        run: |
+          # On restreint l'identité attendue au workflow GitHub Actions de ce
+          # repo précis (via l'émetteur OIDC GitHub) plutôt que d'accepter
+          # n'importe quelle identité (--certificate-identity-regexp=".*"),
+          # pour éviter de valider une signature posée par un tiers.
+          REPO="${{ github.server_url }}/${{ github.repository }}"
+
+          cosign verify "${{ steps.digests.outputs.backend_digest }}" \
+            --certificate-identity-regexp="^${REPO}/.github/workflows/.*@refs/heads/.*" \
+            --certificate-oidc-issuer="https://token.actions.githubusercontent.com"
+
+          cosign verify "${{ steps.digests.outputs.frontend_digest }}" \
+            --certificate-identity-regexp="^${REPO}/.github/workflows/.*@refs/heads/.*" \
+            --certificate-oidc-issuer="https://token.actions.githubusercontent.com"
+
+      - name: Résumé
+        run: |
+          echo "### Signatures Cosign vérifiées" >> "$GITHUB_STEP_SUMMARY"
+          echo "- \`${{ steps.digests.outputs.backend_digest }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- \`${{ steps.digests.outputs.frontend_digest }}\`" >> "$GITHUB_STEP_SUMMARY"
 
   # Met à jour l'OVERLAY kustomize correspondant à la branche (develop -> dev,
   # staging -> staging, main -> prod) avec le nouveau tag d'image, puis
@@ -791,10 +870,9 @@ jobs:
   # qui watch ce même repo/branche/path) détecte la modification et resynchronise.
   update-k8s-manifests:
     runs-on: ubuntu-22.04
-    needs: sign-images
-    # Même logique que pour sign-images : si sign-images a été sauté (car
-    # push-dockerhub l'a été), on ne veut pas non plus exécuter ce job.
-    if: ${{ needs.sign-images.result == 'success' }}
+    needs: verify-images
+    # On ne déploie que si la signature a été positivement vérifiée.
+    if: needs.verify-images.result == 'success'
     permissions:
       contents: write
     steps:
@@ -879,6 +957,7 @@ jobs:
       - trivy-scan
       - push-dockerhub
       - sign-images
+      - verify-images
       - update-k8s-manifests
     steps:
       - name: Déterminer le statut global
@@ -948,6 +1027,7 @@ jobs:
             row "Scan de sécurité (Trivy)"    "${{ needs.trivy-scan.result }}"
             row "Push Docker Hub"             "${{ needs.push-dockerhub.result }}"
             row "Signature Cosign"            "${{ needs.sign-images.result }}"
+            row "Vérification signature"      "${{ needs.verify-images.result }}"
             row "Mise à jour manifests K8s"   "${{ needs.update-k8s-manifests.result }}"
             echo "EOF_ROWS"
           } >> "$GITHUB_OUTPUT"
@@ -968,7 +1048,7 @@ jobs:
           html_body: |
             <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 640px; margin: auto; background: #f1f5f9; padding: 24px;">
               <div style="background: #ffffff; border-radius: 14px; overflow: hidden; border: 1px solid #e2e8f0;">
-                <div style="background: linear-gradient(135deg, #0f172a, #1e293b); padding: 32px 36px;">
+                <div style="background-color: #0f172a; padding: 32px 36px;">
                   <p style="margin: 0; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: #94a3b8;">Pipeline CI/CD · Récapitulatif</p>
                   <h1 style="margin: 8px 0 0; font-size: 21px; color: #ffffff; font-weight: 600;">
                     ${{ steps.global.outputs.status == 'success' && 'Pipeline terminé avec succès' || 'Le pipeline a échoué' }}
