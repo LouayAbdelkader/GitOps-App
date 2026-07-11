@@ -679,9 +679,14 @@ jobs:
       - name: Tagger les images
         run: |
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
-          docker tag backend:test  ${{ secrets.DOCKERHUB_USERNAME }}/backend:latest
+          # NOTE : on ne tag/pousse plus ":latest" ici. "latest" est un tag
+          # mutable — un même nom peut pointer vers un digest différent
+          # d'un jour à l'autre, ce qui est incompatible avec un pipeline
+          # GitOps où Kustomize doit épingler une version immuable et
+          # traçable. Seul le tag SHORT_SHA (immuable, unique par commit)
+          # est poussé et utilisé pour le déploiement K8s. ":latest" reste
+          # pertinent uniquement pour un usage local/dev en dehors de la CI.
           docker tag backend:test  ${{ secrets.DOCKERHUB_USERNAME }}/backend:${SHORT_SHA}
-          docker tag frontend:test ${{ secrets.DOCKERHUB_USERNAME }}/frontend:latest
           docker tag frontend:test ${{ secrets.DOCKERHUB_USERNAME }}/frontend:${SHORT_SHA}
           echo "SHORT_SHA=${SHORT_SHA}" >> "$GITHUB_ENV"
 
@@ -694,27 +699,14 @@ jobs:
           # directement de la sortie de "docker push", qui l'affiche
           # toujours explicitement sur sa dernière ligne
           # (ex: "abc123: digest: sha256:... size: 1234").
-          push_and_get_digest() {
-            local ref="$1"
-            # IMPORTANT : on redirige la sortie de "docker push" vers un
-            # fichier (et on la réaffiche sur stderr pour garder les logs
-            # visibles dans l'étape), SANS jamais laisser cette sortie
-            # transiter par stdout. Cette fonction est appelée dans un
-            # $(...) : si on utilisait "tee" (qui écrit aussi sur stdout),
-            # tout le flux de progression du push ("Preparing", "Pushed",
-            # ...) se retrouverait capturé dans la variable au lieu du seul
-            # digest, ce qui cassait ensuite l'écriture dans $GITHUB_OUTPUT
-            # (format "clé=valeur" invalide sur les lignes suivantes).
-            docker push "$ref" > /tmp/push-output.log 2>&1
-            cat /tmp/push-output.log >&2
-            grep -oE 'sha256:[a-f0-9]{64}' /tmp/push-output.log | tail -1
-          }
 
-          docker push ${{ secrets.DOCKERHUB_USERNAME }}/backend:latest
-          BACKEND_HASH=$(push_and_get_digest ${{ secrets.DOCKERHUB_USERNAME }}/backend:${{ env.SHORT_SHA }})
+          docker push "${{ secrets.DOCKERHUB_USERNAME }}/backend:${{ env.SHORT_SHA }}" > /tmp/push-output.log 2>&1
+          cat /tmp/push-output.log >&2
+          BACKEND_HASH=$(grep -oE 'sha256:[a-f0-9]{64}' /tmp/push-output.log | tail -1)
 
-          docker push ${{ secrets.DOCKERHUB_USERNAME }}/frontend:latest
-          FRONTEND_HASH=$(push_and_get_digest ${{ secrets.DOCKERHUB_USERNAME }}/frontend:${{ env.SHORT_SHA }})
+          docker push "${{ secrets.DOCKERHUB_USERNAME }}/frontend:${{ env.SHORT_SHA }}" > /tmp/push-output.log 2>&1
+          cat /tmp/push-output.log >&2
+          FRONTEND_HASH=$(grep -oE 'sha256:[a-f0-9]{64}' /tmp/push-output.log | tail -1)
 
           if [ -z "$BACKEND_HASH" ] || [ -z "$FRONTEND_HASH" ]; then
             echo "::error::Impossible d'extraire le digest depuis la sortie de docker push."
@@ -748,8 +740,8 @@ jobs:
       - name: Résumé
         run: |
           echo "### Images poussées sur Docker Hub" >> "$GITHUB_STEP_SUMMARY"
-          echo "- \`${{ secrets.DOCKERHUB_USERNAME }}/backend:latest\` et \`:${{ env.SHORT_SHA }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- \`${{ secrets.DOCKERHUB_USERNAME }}/frontend:latest\` et \`:${{ env.SHORT_SHA }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- \`${{ secrets.DOCKERHUB_USERNAME }}/backend:${{ env.SHORT_SHA }}\` (tag immuable, aucun \`:latest\` poussé)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- \`${{ secrets.DOCKERHUB_USERNAME }}/frontend:${{ env.SHORT_SHA }}\` (tag immuable, aucun \`:latest\` poussé)" >> "$GITHUB_STEP_SUMMARY"
 
   # Job séparé et dédié à la signature Cosign : plus facile à relire/débugger
   # indépendamment du push Docker Hub. Ne récupère aucune image (pas besoin),
@@ -814,16 +806,73 @@ jobs:
           echo "- \`${{ steps.digests.outputs.backend_digest }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- \`${{ steps.digests.outputs.frontend_digest }}\`" >> "$GITHUB_STEP_SUMMARY"
 
+  # Vérifie que la signature Cosign posée par "sign-images" est bien valide
+  # AVANT de déclencher le déploiement K8s. Sans ce job, le pipeline se fiait
+  # uniquement au code de sortie de "cosign sign" : la commande peut retourner
+  # OK sans qu'on ait jamais confirmé que la signature est lisible/valide
+  # (ex: problème de propagation vers le registre, signature déposée mais non
+  # vérifiable). "cosign verify" interroge réellement le registre et valide
+  # la signature via l'identité OIDC GitHub Actions attendue, ce qui donne
+  # une vraie garantie avant de resynchroniser ArgoCD.
+  verify-images:
+    runs-on: ubuntu-22.04
+    needs: sign-images
+    if: needs.sign-images.result == 'success'
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Télécharger l'artifact des digests
+        uses: actions/download-artifact@v4
+        with:
+          name: image-digests
+
+      - name: Charger les digests
+        id: digests
+        run: |
+          cat digests.env
+          source digests.env
+          if [ -z "$BACKEND_DIGEST" ] || [ -z "$FRONTEND_DIGEST" ]; then
+            echo "::error::digests.env est vide ou incomplet. Impossible de vérifier."
+            exit 1
+          fi
+          echo "backend_digest=$BACKEND_DIGEST" >> "$GITHUB_OUTPUT"
+          echo "frontend_digest=$FRONTEND_DIGEST" >> "$GITHUB_OUTPUT"
+
+      - name: Installer Cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Vérifier la signature Cosign (backend + frontend)
+        run: |
+          # On restreint l'identité attendue au workflow GitHub Actions de ce
+          # repo précis (via l'émetteur OIDC GitHub) plutôt que d'accepter
+          # n'importe quelle identité (--certificate-identity-regexp=".*"),
+          # pour éviter de valider une signature posée par un tiers.
+          REPO="${{ github.server_url }}/${{ github.repository }}"
+
+          cosign verify "${{ steps.digests.outputs.backend_digest }}" \
+            --certificate-identity-regexp="^${REPO}/.github/workflows/.*@refs/heads/.*" \
+            --certificate-oidc-issuer="https://token.actions.githubusercontent.com"
+
+          cosign verify "${{ steps.digests.outputs.frontend_digest }}" \
+            --certificate-identity-regexp="^${REPO}/.github/workflows/.*@refs/heads/.*" \
+            --certificate-oidc-issuer="https://token.actions.githubusercontent.com"
+
+      - name: Résumé
+        run: |
+          echo "### Signatures Cosign vérifiées ✅" >> "$GITHUB_STEP_SUMMARY"
+          echo "- \`${{ steps.digests.outputs.backend_digest }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- \`${{ steps.digests.outputs.frontend_digest }}\`" >> "$GITHUB_STEP_SUMMARY"
+
   # Met à jour l'OVERLAY kustomize correspondant à la branche (develop -> dev,
   # staging -> staging, main -> prod) avec le nouveau tag d'image, puis
   # commit/push ce changement. ArgoCD (Application dédiée à cet environnement,
   # qui watch ce même repo/branche/path) détecte la modification et resynchronise.
   update-k8s-manifests:
     runs-on: ubuntu-22.04
-    needs: sign-images
-    # Même logique que pour sign-images : si sign-images a été sauté (car
-    # push-dockerhub l'a été), on ne veut pas non plus exécuter ce job.
-    if: ${{ needs.sign-images.result == 'success' }}
+    needs: verify-images
+    # On ne déploie que si la signature a été positivement vérifiée.
+    if: needs.verify-images.result == 'success'
     permissions:
       contents: write
     steps:
@@ -908,6 +957,7 @@ jobs:
       - trivy-scan
       - push-dockerhub
       - sign-images
+      - verify-images
       - update-k8s-manifests
     steps:
       - name: Déterminer le statut global
@@ -977,6 +1027,7 @@ jobs:
             row "Scan de sécurité (Trivy)"    "${{ needs.trivy-scan.result }}"
             row "Push Docker Hub"             "${{ needs.push-dockerhub.result }}"
             row "Signature Cosign"            "${{ needs.sign-images.result }}"
+            row "Vérification signature"      "${{ needs.verify-images.result }}"
             row "Mise à jour manifests K8s"   "${{ needs.update-k8s-manifests.result }}"
             echo "EOF_ROWS"
           } >> "$GITHUB_OUTPUT"
