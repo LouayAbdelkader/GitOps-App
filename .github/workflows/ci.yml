@@ -234,7 +234,7 @@ jobs:
           <style>
             :root{--bg:#f8fafc;--card:#ffffff;--line:#e2e8f0;--text:#1e293b;--muted:#64748b;}
             body{font-family:'Segoe UI',Arial,sans-serif;background:var(--bg);margin:0;padding:32px;color:var(--text);}
-            .header{background:linear-gradient(135deg,#1e293b,#334155);color:#fff;padding:28px 32px;border-radius:12px;margin-bottom:28px;}
+            .header{background-color:#1e293b;color:#ffffff;padding:28px 32px;border-radius:12px;margin-bottom:28px;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
             .header h1{margin:0;font-size:22px;}
             .header p{margin:6px 0 0;opacity:.85;font-size:13px;}
             .summary{display:flex;gap:16px;margin-bottom:8px;}
@@ -326,7 +326,7 @@ jobs:
           html_body: |
             <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 640px; margin: auto; background: #f1f5f9; padding: 24px;">
               <div style="background: #ffffff; border-radius: 14px; overflow: hidden; border: 1px solid #e2e8f0;">
-                <div style="background: linear-gradient(135deg, #0f172a, #1e293b); padding: 32px 36px;">
+                <div style="background-color: #0f172a; padding: 32px 36px;">
                   <p style="margin: 0; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: #94a3b8;">Pipeline CI/CD</p>
                   <h1 style="margin: 8px 0 0; font-size: 21px; color: #ffffff; font-weight: 600;">Rapport de couverture de code</h1>
                   <p style="margin: 10px 0 0; font-size: 13px; color: #cbd5e1;">${{ github.repository }} &nbsp;·&nbsp; commit ${{ github.sha }}</p>
@@ -426,7 +426,7 @@ jobs:
             :root{--bg:#f8fafc;--card:#ffffff;--line:#e2e8f0;--text:#1e293b;--muted:#64748b;}
             *{box-sizing:border-box;}
             body{font-family:'Segoe UI',Arial,sans-serif;background:var(--bg);margin:0;padding:32px;color:var(--text);}
-            .header{background:linear-gradient(135deg,#1e293b,#334155);color:#fff;padding:28px 32px;border-radius:12px;margin-bottom:28px;}
+            .header{background-color:#1e293b;color:#ffffff;padding:28px 32px;border-radius:12px;margin-bottom:28px;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
             .header h1{margin:0;font-size:22px;}
             .header p{margin:6px 0 0;opacity:.85;font-size:13px;}
             h2.target{font-size:16px;border-left:4px solid #2563eb;padding-left:10px;margin:32px 0 12px;word-break:break-all;}
@@ -575,7 +575,7 @@ jobs:
           echo "- Frontend : ${FC} critique(s), ${FH} high" >> "$GITHUB_STEP_SUMMARY"
 
           if [ "$TOTAL" -gt 0 ]; then
-            echo "⚠️ $TOTAL vulnérabilité(s) CRITICAL/HIGH détectée(s) au total. Les rapports ont été générés et envoyés par email ; le déploiement continue quand même (scan informatif, non bloquant)." >> "$GITHUB_STEP_SUMMARY"
+            echo "ATTENTION : $TOTAL vulnérabilité(s) CRITICAL/HIGH détectée(s) au total. Les rapports ont été générés et envoyés par email ; le déploiement continue quand même (scan informatif, non bloquant)." >> "$GITHUB_STEP_SUMMARY"
             echo "vulnerabilities_found=true" >> "$GITHUB_OUTPUT"
           else
             echo "Aucune vulnérabilité CRITICAL/HIGH détectée." >> "$GITHUB_STEP_SUMMARY"
@@ -598,7 +598,7 @@ jobs:
           html_body: |
             <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 640px; margin: auto; background: #f1f5f9; padding: 24px;">
               <div style="background: #ffffff; border-radius: 14px; overflow: hidden; border: 1px solid #e2e8f0;">
-                <div style="background: linear-gradient(135deg, #0f172a, #1e293b); padding: 32px 36px;">
+                <div style="background-color: #0f172a; padding: 32px 36px;">
                   <p style="margin: 0; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: #94a3b8;">Pipeline CI/CD · Sécurité</p>
                   <h1 style="margin: 8px 0 0; font-size: 21px; color: #ffffff; font-weight: 600;">Rapport de scan Trivy</h1>
                   <p style="margin: 10px 0 0; font-size: 13px; color: #cbd5e1;">${{ github.repository }} &nbsp;·&nbsp; commit ${{ github.sha }}</p>
@@ -860,7 +860,7 @@ jobs:
 
       - name: Résumé
         run: |
-          echo "### Signatures Cosign vérifiées ✅" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Signatures Cosign vérifiées" >> "$GITHUB_STEP_SUMMARY"
           echo "- \`${{ steps.digests.outputs.backend_digest }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- \`${{ steps.digests.outputs.frontend_digest }}\`" >> "$GITHUB_STEP_SUMMARY"
 
@@ -1048,7 +1048,7 @@ jobs:
           html_body: |
             <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 640px; margin: auto; background: #f1f5f9; padding: 24px;">
               <div style="background: #ffffff; border-radius: 14px; overflow: hidden; border: 1px solid #e2e8f0;">
-                <div style="background: linear-gradient(135deg, #0f172a, #1e293b); padding: 32px 36px;">
+                <div style="background-color: #0f172a; padding: 32px 36px;">
                   <p style="margin: 0; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: #94a3b8;">Pipeline CI/CD · Récapitulatif</p>
                   <h1 style="margin: 8px 0 0; font-size: 21px; color: #ffffff; font-weight: 600;">
                     ${{ steps.global.outputs.status == 'success' && 'Pipeline terminé avec succès' || 'Le pipeline a échoué' }}
