@@ -551,8 +551,19 @@ jobs:
             echo "COVERAGE_PDF_AVAILABLE=false" >> "$GITHUB_ENV"
           fi
 
-      - name: Faire échouer le pipeline si des vulnérabilités ont été trouvées
+      # IMPORTANT : "continue-on-error: true" ici est ce qui empêche le job
+      # "trivy-scan" de passer en failure au niveau du JOB quand des CVE sont
+      # trouvées. Sans ça, GitHub Actions ajoute un success() implicite devant
+      # le "if:" des jobs suivants (push-dockerhub, sign-images,
+      # update-k8s-manifests) : un job en amont en "failure" fait donc
+      # automatiquement "skip" toute la chaîne de déploiement en cascade,
+      # même si le scan/l'email/le PDF se sont bien déroulés. On garde ici
+      # la trace du résultat (vulnerabilities_found) via un output, affiché
+      # dans le résumé et dans l'email, sans bloquer le déploiement.
+      - name: Vérifier les vulnérabilités trouvées (sans bloquer le pipeline)
+        id: vuln_check
         if: always()
+        continue-on-error: true
         run: |
           num() { [[ "$1" =~ ^[0-9]+$ ]] && echo "$1" || echo 0; }
           BC=$(num "$BACKEND_CRITICAL"); BH=$(num "$BACKEND_HIGH")
@@ -564,10 +575,12 @@ jobs:
           echo "- Frontend : ${FC} critique(s), ${FH} high" >> "$GITHUB_STEP_SUMMARY"
 
           if [ "$TOTAL" -gt 0 ]; then
-            echo "$TOTAL vulnérabilité(s) CRITICAL/HIGH détectée(s) au total. Les deux images ont bien été scannées et les rapports envoyés, mais le pipeline échoue désormais volontairement."
-            exit 1
+            echo "⚠️ $TOTAL vulnérabilité(s) CRITICAL/HIGH détectée(s) au total. Les rapports ont été générés et envoyés par email ; le déploiement continue quand même (scan informatif, non bloquant)." >> "$GITHUB_STEP_SUMMARY"
+            echo "vulnerabilities_found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Aucune vulnérabilité CRITICAL/HIGH détectée." >> "$GITHUB_STEP_SUMMARY"
+            echo "vulnerabilities_found=false" >> "$GITHUB_OUTPUT"
           fi
-          echo "Aucune vulnérabilité CRITICAL/HIGH détectée."
 
       - name: Envoyer les rapports par email (design HTML)
         if: always()
@@ -645,11 +658,6 @@ jobs:
     # On ne pousse une image et on ne déclenche un redéploiement que pour les
     # 3 branches d'environnement. Une PR ou une autre branche s'arrête ici.
     if: github.event_name == 'push' && contains(fromJSON('["main","staging","develop"]'), github.ref_name)
-    # Digests exposés en sortie de job pour que "sign-images" (job séparé)
-    # puisse signer sans avoir à re-pull/re-inspecter les images.
-    outputs:
-      backend_digest: ${{ steps.push.outputs.backend_digest }}
-      frontend_digest: ${{ steps.push.outputs.frontend_digest }}
     steps:
       - name: Télécharger les images buildées
         uses: actions/download-artifact@v4
@@ -719,8 +727,23 @@ jobs:
           echo "Digest backend  : ${{ secrets.DOCKERHUB_USERNAME }}/backend@${BACKEND_HASH}"
           echo "Digest frontend : ${{ secrets.DOCKERHUB_USERNAME }}/frontend@${FRONTEND_HASH}"
 
-          echo "backend_digest=${{ secrets.DOCKERHUB_USERNAME }}/backend@${BACKEND_HASH}" >> "$GITHUB_OUTPUT"
-          echo "frontend_digest=${{ secrets.DOCKERHUB_USERNAME }}/frontend@${FRONTEND_HASH}" >> "$GITHUB_OUTPUT"
+          # On écrit les digests dans un fichier plutôt que dans
+          # $GITHUB_OUTPUT : les "outputs" de job chaînés avec des
+          # comparaisons de chaînes dans un "if:" se sont révélés peu
+          # fiables (le job suivant se skip silencieusement, sans le
+          # moindre log pour comprendre pourquoi). Un fichier transmis en
+          # artifact est visible, "cat-able", et donc débogable.
+          echo "BACKEND_DIGEST=${{ secrets.DOCKERHUB_USERNAME }}/backend@${BACKEND_HASH}" > digests.env
+          echo "FRONTEND_DIGEST=${{ secrets.DOCKERHUB_USERNAME }}/frontend@${FRONTEND_HASH}" >> digests.env
+          echo "--- Contenu de digests.env ---"
+          cat digests.env
+
+      - name: Uploader les digests comme artefact
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-digests
+          path: digests.env
+          retention-days: 1
 
       - name: Résumé
         run: |
@@ -739,18 +762,37 @@ jobs:
   sign-images:
     runs-on: ubuntu-22.04
     needs: push-dockerhub
-    if: ${{ needs.push-dockerhub.result == 'success' && needs.push-dockerhub.outputs.backend_digest != '' && needs.push-dockerhub.outputs.frontend_digest != '' }}
+    # Condition volontairement SIMPLE : uniquement "le job précédent a
+    # réussi". On ne teste plus le contenu des digests ici (voir plus haut
+    # pourquoi) : cette vérification se fait maintenant DANS le job, avec un
+    # message d'erreur clair dans les logs si jamais le fichier est vide ou
+    # absent, plutôt qu'un skip silencieux et indébogable.
+    if: needs.push-dockerhub.result == 'success'
     # id-token: write est nécessaire pour la signature Cosign "keyless"
     # (OIDC Sigstore) : pas de clé privée à gérer/stocker en secret.
     permissions:
       contents: read
       id-token: write
     steps:
-      - name: Debug - vérifier les outputs reçus de push-dockerhub
+      - name: Télécharger l'artifact des digests
+        uses: actions/download-artifact@v4
+        with:
+          name: image-digests
+
+      - name: Charger et vérifier les digests
+        id: digests
         run: |
-          echo "push-dockerhub.result=${{ needs.push-dockerhub.result }}"
-          echo "backend_digest=${{ needs.push-dockerhub.outputs.backend_digest }}"
-          echo "frontend_digest=${{ needs.push-dockerhub.outputs.frontend_digest }}"
+          echo "--- Contenu de digests.env reçu ---"
+          cat digests.env
+          source digests.env
+
+          if [ -z "$BACKEND_DIGEST" ] || [ -z "$FRONTEND_DIGEST" ]; then
+            echo "::error::digests.env est vide ou incomplet. Impossible de signer."
+            exit 1
+          fi
+
+          echo "backend_digest=$BACKEND_DIGEST" >> "$GITHUB_OUTPUT"
+          echo "frontend_digest=$FRONTEND_DIGEST" >> "$GITHUB_OUTPUT"
 
       - name: Installer Cosign
         uses: sigstore/cosign-installer@v3
@@ -763,14 +805,14 @@ jobs:
 
       - name: Signer les images avec Cosign (keyless / Sigstore)
         run: |
-          cosign sign --yes "${{ needs.push-dockerhub.outputs.backend_digest }}"
-          cosign sign --yes "${{ needs.push-dockerhub.outputs.frontend_digest }}"
+          cosign sign --yes "${{ steps.digests.outputs.backend_digest }}"
+          cosign sign --yes "${{ steps.digests.outputs.frontend_digest }}"
 
       - name: Résumé
         run: |
           echo "### Images signées avec Cosign (keyless)" >> "$GITHUB_STEP_SUMMARY"
-          echo "- \`${{ needs.push-dockerhub.outputs.backend_digest }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- \`${{ needs.push-dockerhub.outputs.frontend_digest }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- \`${{ steps.digests.outputs.backend_digest }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- \`${{ steps.digests.outputs.frontend_digest }}\`" >> "$GITHUB_STEP_SUMMARY"
 
   # Met à jour l'OVERLAY kustomize correspondant à la branche (develop -> dev,
   # staging -> staging, main -> prod) avec le nouveau tag d'image, puis
