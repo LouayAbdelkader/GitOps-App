@@ -3,6 +3,8 @@ kind: Application
 metadata:
   name: employee-app-dev
   namespace: argocd
+  labels:
+    env: Development
 spec:
   project: default
 
