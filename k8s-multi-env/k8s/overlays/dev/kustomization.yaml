@@ -15,10 +15,10 @@ resources:
 images:
 - name: silou19/backend
   newName: silou19/backend
-  newTag: e86b91d
+  newTag: "7721e43"
 - name: silou19/frontend
   newName: silou19/frontend
-  newTag: e86b91d
+  newTag: "7721e43"
 
 patches:
 - path: patch-replicas.yaml
